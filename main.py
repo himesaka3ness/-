@@ -1,20 +1,21 @@
 import requests
 import hashlib
 import time
-from flask import Flask, render_template_string, request, redirect
+from flask import Flask, render_template_string, request, redirect, session
 import sqlite3
 from datetime import datetime, timedelta
 import os
 
 app = Flask(__name__)
+app.secret_key = 'your-secret-key-goes-here' # セッション管理用の鍵（何でもOK）
 
 # --- 設定 ---
+ADMIN_PASS = "tastutaage0224"  # 👈 ここを自分専用のパスワードに変更してください！
 BLOCKED_LANGS = ['zh', 'ru', 'ko']
 NG_WORDS = ["死ね", "殺す", "詐欺", "麻薬", "闇バイト", "爆破", "テロ"]
 POST_INTERVAL = 10 
 
 def init_db():
-    # Render環境では /tmp フォルダを使うのが安全です
     with sqlite3.connect('emergency.db') as conn:
         conn.execute('''CREATE TABLE IF NOT EXISTS posts 
                         (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, message TEXT, 
@@ -58,17 +59,19 @@ html_template = """
         .input-area { background: #111827; padding: 15px; border-radius: 12px; border: 1px solid #374151; margin-bottom: 20px; }
         input, textarea { width: 100%; padding: 12px; margin: 8px 0; background: #1f2937; border: 1px solid #4b5563; color: white; border-radius: 8px; box-sizing: border-box; font-size: 16px; }
         button { width: 100%; padding: 15px; background: #10b981; border: none; font-weight: bold; border-radius: 8px; cursor: pointer; color: white; font-size: 16px; }
-        .post { background: #1f2937; padding: 12px; border-radius: 8px; margin-top: 10px; border-bottom: 2px solid #374151; }
+        .post { background: #1f2937; padding: 12px; border-radius: 8px; margin-top: 10px; border-bottom: 2px solid #374151; position: relative; }
         .badge { display: inline-block; background: #374151; color: #10b981; padding: 2px 6px; border-radius: 4px; font-size: 0.7em; margin-right: 4px; font-weight: bold; }
         .foreign-alert { background: #ef4444; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7em; font-weight: bold; }
         .warning { color: #f87171; font-size: 0.75em; font-weight: bold; display: block; margin-bottom: 5px; }
         .meta { font-size: 0.75em; color: #9ca3af; margin-top: 8px; }
         .id-text { color: #60a5fa; font-family: monospace; }
+        .del-btn { position: absolute; top: 10px; right: 10px; background: #b91c1c; color: white; padding: 4px 8px; border-radius: 4px; text-decoration: none; font-size: 0.7em; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">🚨 緊急連絡Node <br><small>監視・防衛モード</small></div>
+        <div class="header">🚨 緊急連絡Node <br><small>監視・防衛モード {% if is_admin %}(管理者){% endif %}</small></div>
+        
         <div class="input-area">
             <form action="/post_msg" method="post">
                 <input type="text" name="name" placeholder="名前" required maxlength="10">
@@ -76,8 +79,13 @@ html_template = """
                 <button type="submit">送信</button>
             </form>
         </div>
+
         {% for post in posts %}
         <div class="post">
+            {% if is_admin %}
+            <a href="/delete/{{ post[0] }}" class="del-btn" onclick="return confirm('削除しますか？')">削除</a>
+            {% endif %}
+            
             {% if is_old(post[6]) %}<span class="warning">⚠️ 古い情報(24h経過)</span>{% endif %}
             <div class="badge">📍 {{ post[4] }}</div>
             {% if post[7] == 1 %}<span class="foreign-alert">⚠️ 外国からの接続</span>{% endif %}
@@ -98,15 +106,38 @@ def is_old(time_str):
     try:
         ptime = datetime.strptime(time_str, '%m/%d %H:%M').replace(year=datetime.now().year)
         return datetime.now() - ptime > timedelta(hours=24)
-    except:
-        return False
+    except: return False
 
 @app.route('/')
 def index():
     init_db()
+    is_admin = session.get('admin') == True
     with sqlite3.connect('emergency.db') as conn:
         posts = conn.execute('SELECT * FROM posts ORDER BY id DESC LIMIT 50').fetchall()
-    return render_template_string(html_template, posts=posts, is_old=is_old)
+    return render_template_string(html_template, posts=posts, is_old=is_old, is_admin=is_admin)
+
+@app.route('/admin', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'POST':
+        if request.form.get('password') == ADMIN_PASS:
+            session['admin'] = True
+            return redirect('/')
+    return '''
+        <body style="background:#0b0e14;color:white;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;">
+            <form method="post" style="background:#1f2937;padding:20px;border-radius:10px;text-align:center;">
+                <h3>管理者ログイン</h3>
+                <input type="password" name="password" style="padding:10px;border-radius:5px;border:none;margin-bottom:10px;"><br>
+                <button type="submit" style="background:#10b981;color:white;border:none;padding:10px 20px;border-radius:5px;cursor:pointer;">認証</button>
+            </form>
+        </body>
+    '''
+
+@app.route('/delete/<int:post_id>')
+def delete_post(post_id):
+    if session.get('admin'):
+        with sqlite3.connect('emergency.db') as conn:
+            conn.execute('DELETE FROM posts WHERE id = ?', (post_id,))
+    return redirect('/')
 
 @app.route('/post_msg', methods=['POST'])
 def post_msg():
